@@ -8,6 +8,10 @@ read -p "Введите имя нового пользователя: " username
 read -sp "Введите пароль для пользователя $username: " password
 echo
 
+# Запрос порта для SSH
+read -p "Введите номер порта для SSH (по умолчанию 62223): " ssh_port
+ssh_port=${ssh_port:-62223}  # Если порт не введён, используем 62223
+
 # Обновление системы
 echo "Обновление пакетов..."
 apt update && apt upgrade -y
@@ -32,7 +36,7 @@ fi
 
 # Добавление правил UFW
 echo "Добавление правил UFW..."
-sudo ufw allow 62223/tcp
+sudo ufw allow $ssh_port/tcp
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
 
@@ -53,7 +57,7 @@ maxretry = 5
 
 [sshd]
 enabled = true
-port = 62223
+port = $ssh_port
 filter = sshd
 logpath = /var/log/auth.log
 maxretry = 5
@@ -86,8 +90,9 @@ usermod -aG sudo $username
 # Настройка SSH
 echo "Настройка SSH..."
 sed -i 's/^PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
-sed -i 's/^#Port 22/Port 62223/' /etc/ssh/sshd_config
+sed -i "s/^#Port 22/Port $ssh_port/" /etc/ssh/sshd_config
 systemctl restart ssh
 
 echo "Настройка завершена!"
+echo "Порт SSH: $ssh_port"
 echo "Порт панели x-ui: $xui_port"
