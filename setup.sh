@@ -1,6 +1,9 @@
 #!/bin/bash
 
-# Запрос имени пользователя
+# Вывод приветствия
+echo "Начинаем настройку сервера..."
+
+# Запрос имени пользователя и пароля
 read -p "Введите имя нового пользователя: " username
 read -sp "Введите пароль для пользователя $username: " password
 echo
@@ -13,14 +16,29 @@ apt update && apt upgrade -y
 echo "Установка sudo..."
 apt install sudo -y
 
-# Установка и настройка UFW
+# Установка UFW
 echo "Установка UFW..."
 apt install ufw -y
 
-# Добавление правил UFW (статус UFW остаётся inactive)
-ufw allow 62223/tcp
-ufw default deny incoming
-ufw default allow outgoing
+# Проверка статуса UFW
+ufw_status=$(sudo ufw status | grep -w "Status" | awk '{print $2}')
+echo "Текущий статус UFW: $ufw_status"
+
+# Если UFW активен, останавливаем его
+if [ "$ufw_status" = "active" ]; then
+    echo "Останавливаем UFW..."
+    sudo ufw disable
+fi
+
+# Добавление правил UFW
+echo "Добавление правил UFW..."
+sudo ufw allow 62223/tcp
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+
+# Проверка статуса UFW после добавления правил
+echo "Проверка статуса UFW после добавления правил..."
+sudo ufw status
 
 # Установка и настройка Fail2Ban
 echo "Установка Fail2Ban..."
@@ -44,10 +62,6 @@ EOF
 # Перезапуск Fail2Ban
 systemctl restart fail2ban
 
-# Проверка статуса Fail2Ban
-echo "Проверка статуса Fail2Ban..."
-fail2ban-client status
-
 # Установка панели x-ui
 echo "Установка панели x-ui..."
 bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)
@@ -56,39 +70,24 @@ bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.
 xui_port=$(grep -oP '(?<=port: )\d+' /etc/x-ui/x-ui.yaml)
 
 # Добавление порта x-ui в правила UFW
-ufw allow $xui_port/tcp
+echo "Добавление порта x-ui ($xui_port) в правила UFW..."
+sudo ufw allow $xui_port/tcp
 
-# Создание пользователя
+# Проверка статуса UFW после добавления порта x-ui
+echo "Проверка статуса UFW после добавления порта x-ui..."
+sudo ufw status
+
+# Создание пользователя и добавление в группу sudo
 echo "Создание пользователя $username..."
 adduser $username --gecos "" --disabled-password
 echo "$username:$password" | chpasswd
-
-# Добавление пользователя в группу sudo
 usermod -aG sudo $username
 
-# Редактирование конфигурации SSH
+# Настройка SSH
 echo "Настройка SSH..."
 sed -i 's/^PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
 sed -i 's/^#Port 22/Port 62223/' /etc/ssh/sshd_config
-
-# Перезапуск SSH
 systemctl restart ssh
-
-# Напоминание о необходимости добавления правил UFW для inbound-портов
-echo "============================================================"
-echo "НАПОМИНАНИЕ:"
-echo "Если позже появятся дополнительные inbound-порты, добавьте их в UFW:"
-echo "  sudo ufw allow <порт>/tcp"
-echo "============================================================"
-
-# Напоминание о необходимости активации UFW
-echo "============================================================"
-echo "НАПОМИНАНИЕ:"
-echo "Чтобы активировать UFW, выполните команду:"
-echo "  sudo ufw enable"
-echo "Текущий статус UFW:"
-ufw status
-echo "============================================================"
 
 echo "Настройка завершена!"
 echo "Порт панели x-ui: $xui_port"
