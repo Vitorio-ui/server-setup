@@ -18,10 +18,7 @@ echo "Установка UFW..."
 apt install ufw -y
 
 # Добавление правил UFW (статус UFW остаётся inactive)
-ufw allow OpenSSH
 ufw allow 62223/tcp
-ufw allow 80/tcp
-ufw allow 443/tcp
 ufw default deny incoming
 ufw default allow outgoing
 
