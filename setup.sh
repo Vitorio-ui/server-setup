@@ -1,98 +1,75 @@
 #!/bin/bash
 
-# Вывод приветствия
-echo "Начинаем настройку сервера..."
+echo "=== НАСТРОЙКА СЕРВЕРА ==="
 
-# Запрос имени пользователя и пароля
+# Запрос параметров
 read -p "Введите имя нового пользователя: " username
-read -sp "Введите пароль для пользователя $username: " password
+read -sp "Введите пароль: " password
 echo
-
-# Запрос порта для SSH
-read -p "Введите номер порта для SSH (по умолчанию 62223): " ssh_port
-ssh_port=${ssh_port:-62223}  # Если порт не введён, используем 62223
+read -p "SSH порт (по умолчанию 62223): " ssh_port
+ssh_port=${ssh_port:-62223}
 
 # Обновление системы
 echo "Обновление пакетов..."
 apt update && apt upgrade -y
+apt install -y sudo ufw fail2ban
 
-# Установка sudo
-echo "Установка sudo..."
-apt install sudo -y
-
-# Установка UFW
-echo "Установка UFW..."
-apt install ufw -y
-
-# Проверка статуса UFW
-ufw_status=$(sudo ufw status | grep -w "Status" | awk '{print $2}')
-echo "Текущий статус UFW: $ufw_status"
-
-# Если UFW активен, останавливаем его
-if [ "$ufw_status" = "active" ]; then
-    echo "Останавливаем UFW..."
-    sudo ufw disable
-fi
-
-# Добавление правил UFW
-echo "Добавление правил UFW..."
-sudo ufw allow $ssh_port/tcp
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-
-# Проверка статуса UFW после добавления правил
-echo "Проверка статуса UFW после добавления правил..."
-sudo ufw status
-
-# Установка и настройка Fail2Ban
-echo "Установка Fail2Ban..."
-apt install fail2ban -y
-
-# Создание конфигурации Fail2Ban
-cat <<EOF > /etc/fail2ban/jail.local
-[DEFAULT]
-bantime = 3600
-findtime = 600
-maxretry = 5
-
-[sshd]
-enabled = true
-port = $ssh_port
-filter = sshd
-logpath = /var/log/auth.log
-maxretry = 5
-EOF
-
-# Перезапуск Fail2Ban
-systemctl restart fail2ban
-
-# Установка панели x-ui
-echo "Установка панели x-ui..."
-bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)
-
-# Получение порта панели x-ui
-xui_port=$(grep -oP '(?<=port: )\d+' /etc/x-ui/x-ui.yaml)
-
-# Добавление порта x-ui в правила UFW
-echo "Добавление порта x-ui ($xui_port) в правила UFW..."
-sudo ufw allow $xui_port/tcp
-
-# Проверка статуса UFW после добавления порта x-ui
-echo "Проверка статуса UFW после добавления порта x-ui..."
-sudo ufw status
-
-# Создание пользователя и добавление в группу sudo
+# Создание пользователя
 echo "Создание пользователя $username..."
-adduser $username --gecos "" --disabled-password
+adduser --disabled-password --gecos "" $username
 echo "$username:$password" | chpasswd
 usermod -aG sudo $username
 
 # Настройка SSH
 echo "Настройка SSH..."
-sed -i 's/^PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
-sed -i "s/^#Port 22/Port $ssh_port/" /etc/ssh/sshd_config
-systemctl restart ssh
+sed -i "s/#Port 22/Port $ssh_port/" /etc/ssh/sshd_config
+sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+echo "AllowUsers $username" >> /etc/ssh/sshd_config
+systemctl restart sshd
 
-echo "Настройка завершена!"
-echo "Порт SSH: $ssh_port"
-echo "Порт панели x-ui: $xui_port"
+# Настройка UFW
+echo "Настройка фаервола..."
+ufw disable
+ufw allow $ssh_port/tcp
+ufw default deny incoming
+ufw default allow outgoing
+ufw --force enable
+
+# Настройка Fail2Ban
+echo "Настройка Fail2Ban..."
+cat > /etc/fail2ban/jail.local <<EOF
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 3
+
+[sshd]
+enabled = true
+port = $ssh_port
+EOF
+systemctl restart fail2ban
+
+# Отключение IPv6
+echo "Отключение IPv6..."
+cat >> /etc/sysctl.conf <<EOF
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+EOF
+sysctl -p
+
+# Безопасная установка x-ui
+echo "Установка x-ui..."
+mkdir -p /tmp/x-ui-install
+curl -o /tmp/x-ui-install/install.sh -L https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh
+echo "Проверьте содержимое скрипта:"
+less /tmp/x-ui-install/install.sh
+read -p "Нажмите Enter для продолжения установки или Ctrl+C для отмены..."
+bash /tmp/x-ui-install/install.sh
+
+echo "=== НАСТРОЙКА ЗАВЕРШЕНА ==="
+echo "Для подключения используйте:"
+echo "1. Сохраните этот ключ на Windows:"
+cat /home/$username/.ssh/id_ed25519
+echo "2. Подключайтесь командой:"
+echo "ssh -p $ssh_port -i путь_к_ключу $username@$(hostname -I | awk '{print $1}')"
