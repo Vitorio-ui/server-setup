@@ -81,19 +81,35 @@ if [[ "$confirm" =~ ^[Yy]$ ]]; then
   # Настройка x-ui
   echo -e "${YELLOW}Настройка панели x-ui...${NC}"
   systemctl stop x-ui
+  
+  # Генерация случайных учетных данных
+  xui_username=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 12)
+  xui_password=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16)
+  
+  # Создаем папку для сессий
+  mkdir -p /etc/x-ui/.session
+  chown -R nobody:nogroup /etc/x-ui/.session
+  chmod 700 /etc/x-ui/.session
+
   sqlite3 /etc/x-ui/x-ui.db <<EOF
   UPDATE setting SET value='$xui_port' WHERE key='webPort';
   UPDATE setting SET value='$xui_path' WHERE key='webBasePath';
   UPDATE setting SET value='' WHERE key='webCertFile';
   UPDATE setting SET value='' WHERE key='webKeyFile';
   UPDATE setting SET value='true' WHERE key='webListen';
+  UPDATE account SET username='$xui_username', password='$xui_password' WHERE id=1;
+  INSERT INTO setting (key, value) VALUES ('webDomain', '');
 EOF
+  
+  # Добавляем корректные настройки CSRF
+  echo "SESSION_SECRET=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 32)" >> /etc/x-ui/x-ui.env
+  
   systemctl start x-ui
 else
   echo -e "${RED}Установка x-ui отменена${NC}"
 fi
 
-# 7. Настройка SSH (в самом конце)
+# 7. Настройка SSH (PasswordAuthentication остается включенным)
 echo -e "\n${YELLOW}[7/8] Настройка SSH...${NC}"
 sed -i "s/#Port 22/Port $ssh_port/" /etc/ssh/sshd_config
 sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config
