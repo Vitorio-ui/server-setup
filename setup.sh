@@ -2,50 +2,54 @@
 
 # Проверка прав root
 if [ "$(id -u)" -ne 0 ]; then
-  echo "Этот скрипт должен быть запущен с правами root. Используйте sudo!" >&2
+  echo "Скрипт должен быть запущен с правами root!" >&2
   exit 1
 fi
 
-# Цвета для вывода
-RED='\033[0;31m'
+# Цвета
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+RED='\033[0;31m'
+NC='\033[0m'
 
-# Запрос параметров
-echo -e "\n${GREEN}=== НАСТРОЙКА СЕРВЕРА UBUNTU ===${NC}"
-read -p "Введите имя нового пользователя: " username
-read -sp "Введите сложный пароль для пользователя $username: " password
+echo -e "\n${GREEN}=== НАСТРОЙКА СЕРВЕРА UBUNTU С X-UI И АВТОТУННЕЛЕМ ===${NC}"
+read -p "Имя нового пользователя: " username
+read -sp "Пароль для $username: " password
 echo
-read -p "Введите SSH порт (по умолчанию 62223): " ssh_port
+read -p "Порт для панели x-ui (по умолчанию 54123): " xui_port
+xui_port=${xui_port:-54123}
+read -p "Путь к резервной копии x-ui (tar.gz): " xui_backup
+read -p "Новый SSH порт на Middleman (по умолчанию 62223): " ssh_port
 ssh_port=${ssh_port:-62223}
-read -p "Введите порт для x-ui панели (по умолчанию 2053): " xui_port
-xui_port=${xui_port:-2053}
-read -p "Введите путь к панели x-ui (например /secretpath/): " xui_path
-xui_path=${xui_path:-/$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16)/}
+
+# Данные для автотуннеля
+echo -e "\n${YELLOW}=== Настройка автотуннеля Middle → Gate ===${NC}"
+read -p "SSH-пользователь на Gate: " gate_user
+read -p "Публичный IP или домен Gate: " gate_host
+read -p "Порт SSH на Gate (по умолчанию 62223): " gate_ssh_port
+gate_ssh_port=${gate_ssh_port:-62223}
+read -p "Локальный порт для проброса (например 30000): " local_port
+read -p "Удалённый адрес назначения на Gate (например 127.0.0.1:10000): " remote_dest
 
 # 1. Обновление системы
-echo -e "\n${YELLOW}[1/8] Обновление системы...${NC}"
+echo -e "\n${YELLOW}[1/9] Обновление системы...${NC}"
 export DEBIAN_FRONTEND=noninteractive
 apt update && apt upgrade -y
-apt install -y sudo ufw fail2ban curl sqlite3
+apt install -y sudo ufw fail2ban curl sqlite3 tar autossh openssh-client net-tools
 
-# 2. Настройка пользователя
-echo -e "\n${YELLOW}[2/8] Создание пользователя $username...${NC}"
+# 2. Создание пользователя
+echo -e "\n${YELLOW}[2/9] Создание пользователя...${NC}"
 adduser --disabled-password --gecos "" "$username"
 echo "$username:$password" | chpasswd
 usermod -aG sudo "$username"
 
-# 3. Настройка UFW
-echo -e "\n${YELLOW}[3/8] Настройка UFW...${NC}"
+# 3. Настройка UFW и Fail2Ban
+echo -e "\n${YELLOW}[3/9] Настройка UFW и Fail2Ban...${NC}"
 ufw disable
-ufw allow "$xui_port/tcp"  # Временно открываем порт x-ui
 ufw default deny incoming
 ufw default allow outgoing
-ufw --force enable
+ufw allow "$xui_port/tcp"
 
-# 4. Настройка Fail2Ban
-echo -e "\n${YELLOW}[4/8] Настройка Fail2Ban...${NC}"
 cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 bantime = 1h
@@ -54,8 +58,8 @@ maxretry = 3
 EOF
 systemctl restart fail2ban
 
-# 5. Отключение IPv6
-echo -e "\n${YELLOW}[5/8] Отключение IPv6...${NC}"
+# 4. Отключение IPv6
+echo -e "\n${YELLOW}[4/9] Отключение IPv6...${NC}"
 cat >> /etc/sysctl.conf <<EOF
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
@@ -63,87 +67,76 @@ net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
 sysctl -p
 
-# 6. Установка x-ui с проверкой
-echo -e "\n${YELLOW}[6/8] Установка x-ui...${NC}"
-mkdir -p /tmp/x-ui-install
-curl -o /tmp/x-ui-install/install.sh -L https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh
+# 5. Установка x-ui
+echo -e "\n${YELLOW}[5/9] Установка x-ui...${NC}"
+bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)
 
-echo -e "\n${YELLOW}=== Просмотр скрипта установки x-ui ===${NC}"
-echo -e "Нажмите Enter для просмотра скрипта (прокрутка: Space, выход: Q)"
-read
-less /tmp/x-ui-install/install.sh
-
-read -p "Продолжить установку x-ui? (y/N): " confirm
-if [[ "$confirm" =~ ^[Yy]$ ]]; then
-  echo -e "${GREEN}Установка x-ui...${NC}"
-  bash /tmp/x-ui-install/install.sh
-  
-  # Настройка x-ui
-  echo -e "${YELLOW}Настройка панели x-ui...${NC}"
+# 5.1 Восстановление конфигурации
+if [ -f "$xui_backup" ]; then
+  echo -e "${YELLOW}Восстановление конфигурации x-ui...${NC}"
   systemctl stop x-ui
-  
-  # Генерация случайных учетных данных
-  xui_username=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 12)
-  xui_password=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 16)
-  
-  # Создаем папку для сессий
-  mkdir -p /etc/x-ui/.session
-  chown -R nobody:nogroup /etc/x-ui/.session
-  chmod 700 /etc/x-ui/.session
-
-  sqlite3 /etc/x-ui/x-ui.db <<EOF
-  UPDATE setting SET value='$xui_port' WHERE key='webPort';
-  UPDATE setting SET value='$xui_path' WHERE key='webBasePath';
-  UPDATE setting SET value='' WHERE key='webCertFile';
-  UPDATE setting SET value='' WHERE key='webKeyFile';
-  UPDATE setting SET value='true' WHERE key='webListen';
-  UPDATE account SET username='$xui_username', password='$xui_password' WHERE id=1;
-  INSERT INTO setting (key, value) VALUES ('webDomain', '');
-EOF
-  
-  # Добавляем корректные настройки CSRF
-  echo "SESSION_SECRET=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 32)" >> /etc/x-ui/x-ui.env
-  
+  tar xzvf "$xui_backup" -C /
+  if [ "$xui_port" != "2053" ]; then
+    sqlite3 /etc/x-ui/x-ui.db "UPDATE setting SET value='$xui_port' WHERE key='webPort';"
+  fi
   systemctl start x-ui
+  echo -e "${GREEN}Конфигурация восстановлена и x-ui запущен.${NC}"
 else
-  echo -e "${RED}Установка x-ui отменена${NC}"
+  echo -e "${YELLOW}Резервная копия не найдена, пропуск восстановления.${NC}"
 fi
 
-# 7. Настройка SSH (PasswordAuthentication остается включенным)
-echo -e "\n${YELLOW}[7/8] Настройка SSH...${NC}"
+# 6. Настройка SSH-ключа и копирование на Gate
+echo -e "\n${YELLOW}[6/9] Настройка SSH-ключей...${NC}"
+sudo -u "$username" ssh-keygen -t rsa -b 4096 -f /home/$username/.ssh/id_rsa -N "" -q
+echo -e "${YELLOW}Копирование ключа на Gate...${NC}"
+sudo -u "$username" ssh-copy-id -p "$gate_ssh_port" "$gate_user@$gate_host"
+
+# 7. Создание автотуннеля через autossh
+echo -e "\n${YELLOW}[7/9] Создание автотуннеля...${NC}"
+cat > /etc/systemd/system/autossh-tunnel.service <<EOF
+[Unit]
+Description=AutoSSH tunnel to Gate
+After=network.target
+
+[Service]
+User=$username
+Environment="AUTOSSH_GATETIME=0"
+Environment="AUTOSSH_PORT=0"
+ExecStart=/usr/bin/autossh -N -o "ServerAliveInterval 30" -o "ServerAliveCountMax 3" \
+  -p $gate_ssh_port -L $local_port:$remote_dest $gate_user@$gate_host
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable autossh-tunnel
+systemctl start autossh-tunnel
+
+# 8. Проверка туннеля
+echo -e "\n${YELLOW}[8/9] Проверка туннеля...${NC}"
+sleep 3
+if netstat -tnlp | grep -q ":$local_port"; then
+  echo -e "${GREEN}✅ Туннель слушает на localhost:$local_port${NC}"
+else
+  echo -e "${RED}❌ Локальный порт $local_port не слушает!${NC}"
+fi
+
+# 9. Настройка SSH (в конце)
+echo -e "\n${YELLOW}[9/9] Настройка SSH...${NC}"
+ufw allow "$ssh_port/tcp"
 sed -i "s/#Port 22/Port $ssh_port/" /etc/ssh/sshd_config
 sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config
 echo "AllowUsers $username" >> /etc/ssh/sshd_config
-
-# Обновление Fail2Ban для нового SSH порта
-sed -i "s/port = .*/port = $ssh_port/" /etc/fail2ban/jail.local
-systemctl restart fail2ban
-
-# Обновление UFW
-ufw allow "$ssh_port/tcp"
-ufw --force enable
-
 systemctl restart sshd
 
-# 8. Финальная настройка
-echo -e "\n${YELLOW}[8/8] Завершение настройки...${NC}"
-echo -e "${GREEN}=== НАСТРОЙКА ЗАВЕРШЕНА ===${NC}"
+# Финал
+echo -e "\n${GREEN}Настройка завершена.${NC}"
+echo -e "SSH: ${GREEN}$username@$(curl -s ifconfig.me) -p $ssh_port${NC}"
+echo -e "x-ui панель: ${GREEN}http://$(curl -s ifconfig.me):$xui_port${NC}"
+echo -e "Автотуннель: ${GREEN}localhost:$local_port → $remote_dest на Gate${NC}"
 
-# Вывод параметров
-echo -e "\n${YELLOW}=== ПАРАМЕТРЫ ДОСТУПА ===${NC}"
-echo -e "SSH подключение:"
-echo -e "  Порт: ${GREEN}$ssh_port${NC}"
-echo -e "  Пользователь: ${GREEN}$username${NC}"
-echo -e "\nПанель x-ui:"
-echo -e "  URL: ${GREEN}http://$(curl -s ifconfig.me):$xui_port$xui_path${NC}"
-echo -e "  Логин: ${GREEN}admin${NC}"
-echo -e "  Пароль: ${GREEN}admin${NC}"
-echo -e "  Случайный путь: ${GREEN}$xui_path${NC}"
-echo -e "\n${RED}ВАЖНО:${NC}"
-echo -e "1. Сразу смените пароль в панели x-ui!"
-echo -e "2. Для защиты рекомендуется:"
-echo -e "   - Настроить SSH туннель для доступа к панели"
-echo -e "   - Установить HTTPS сертификат"
-echo -e "3. Команда для SSH туннеля:"
-echo -e "   ${GREEN}ssh -p $ssh_port -L 8080:localhost:$xui_port $username@$(curl -s ifconfig.me)${NC}"
-echo -e "   Затем откройте в браузере: ${GREEN}http://localhost:8080$xui_path${NC}"
+read -p "Нажмите Enter для завершения сессии и входа под новым пользователем... " _
+exit
